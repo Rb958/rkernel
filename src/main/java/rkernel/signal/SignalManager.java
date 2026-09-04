@@ -1,6 +1,10 @@
+/*
+ * Copyright (c) 2021-2026 Richie Akawa
+ * Licensed under the Apache License, Version 2.0. See LICENSE.
+ */
+
 package rkernel.signal;
 
-import rkernel.BasicKernel;
 import rkernel.IKernel;
 import rkernel.component.IComponent;
 import rkernel.exception.FileManagerException;
@@ -9,57 +13,59 @@ import rkernel.utils.file.FileManager;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.List;
-import java.util.stream.Collectors;
 
-public class SignalManager implements ISignalManager{
+/**
+ * Routes signal types to their interpreter and keeps the registry on disk, in
+ * {@code <documentRoot>/registries/<kernel name>.xml}, so that a restarted
+ * kernel finds its components again without reloading every JAR first.
+ *
+ * <p>The registry used to be a {@code static} field shared by every kernel of
+ * the JVM: two kernels in the same process overwrote each other's routing
+ * table. It is now an instance field.</p>
+ */
+public class SignalManager implements ISignalManager {
 
-    protected static SignalRegistry registry;
+    protected SignalRegistry registry;
     protected IKernel kernel;
 
-    protected final File documentroot = Paths.get(".").toFile();
-    protected final String registriesDirectory = "/registries/";
+    protected final File documentRoot;
 
     public SignalManager(IKernel kernel) {
+        this(kernel, new File("."));
+    }
+
+    /** @param documentRoot folder under which {@code registries/} is created. */
+    public SignalManager(IKernel kernel, File documentRoot) {
         this.kernel = kernel;
+        this.documentRoot = documentRoot;
         try {
-            if (!FileManager.getInstance(documentroot).pathExist(getRegistryPath())){
-                registry = new SignalRegistry(kernel.getName());
-                flush(registry);
+            registry = FileManager.getInstance(documentRoot).getFileContent(getRegistryPath());
+            if (registry.getKernelName() == null) {
+                registry.setKernelName(kernel.getName());
+                flush();
             }
-            registry = getRegistry();
         } catch (FileManagerException | IOException e) {
+            registry = new SignalRegistry(kernel.getName());
             kernel.dispatchLogException(e);
         }
     }
 
-    public Object findInterpreter(String type){
-        List<SignalRegistry.SignalTypeEntry> entries = registry.getSignalTypeEntries()
-                .stream()
-                .filter(signalTypeEntry -> signalTypeEntry.getType().equalsIgnoreCase(type))
-                .collect(Collectors.toList());
-        if (!entries.isEmpty()){
-            if (entries.get(0).getComponentName() != null && !entries.get(0).getComponentName().isEmpty()){
-                return kernel.findComponentByName(entries.get(0).getComponentName());
-            } else if (entries.get(0).getKernelName() != null && !entries.get(0).getKernelName().isEmpty()){
-                return kernel.findKernelByName(entries.get(0).getKernelName());
-            } else{
-                return null;
-            }
-        }else{
-            return null;
+    @Override
+    public Object findInterpreter(String type) {
+        SignalRegistry.SignalTypeEntry entry = registry.getTypeEntry(type);
+        if (entry == null) return null;
+        if (entry.getComponentName() != null && !entry.getComponentName().isEmpty()) {
+            return kernel.findComponentByName(entry.getComponentName());
         }
+        if (entry.getKernelName() != null && !entry.getKernelName().isEmpty()) {
+            return kernel.findKernelByName(entry.getKernelName());
+        }
+        return null;
     }
 
-    private SignalRegistry getRegistry() throws FileManagerException, IOException {
-        return (SignalRegistry) FileManager.getInstance(documentroot)
-                .getFileContent(getRegistryPath());
-    }
-
-    public void setKernel(BasicKernel kernel) {
+    @Override
+    public void setKernel(IKernel kernel) {
         this.kernel = kernel;
     }
 
@@ -68,48 +74,41 @@ public class SignalManager implements ISignalManager{
         return registry.getTypeEntry(type);
     }
 
-    private void flush(SignalRegistry registry) throws FileManagerException {
-        try {
-            FileManager.getInstance(documentroot).writeFileContent(registry, getRegistryPath());
-        } catch (IOException e) {
-            kernel.dispatchLogException(e);
-        }
+    public SignalRegistry getRegistry() {
+        return registry;
     }
 
-    public Path getRegistryPath(){
-        if (!Files.exists(Paths.get(documentroot.getPath().concat(registriesDirectory)))){
-            try {
-                Files.createDirectories(Paths.get(documentroot.getPath().concat(registriesDirectory)));
-            } catch (IOException e) {
-                kernel.dispatchLogException(e);
-            }
-        }
-        return Paths.get(documentroot.getPath().concat("/registries/"+ kernel.getName().replace(" ", "_") +".xml"));
+    public Path getRegistryPath() {
+        String fileName = kernel.getName().replace(' ', '_') + ".xml";
+        return documentRoot.toPath().resolve("registries").resolve(fileName);
     }
 
+    @Override
     public void addSignalType(String type, IComponent component) throws SignalRegistryException {
         registry.addSignalType(type, component);
-        try {
-            flush(registry);
-        } catch (FileManagerException e) {
-            throw new SignalRegistryException(e.getMessage());
-        }
+        flushOrThrow();
     }
 
+    @Override
     public void addSignalType(String type, IKernel kernel) throws SignalRegistryException {
         registry.addSignalType(type, kernel);
-        try {
-            flush(registry);
-        } catch (FileManagerException e) {
-            throw new SignalRegistryException(e.getMessage());
-        }
+        flushOrThrow();
     }
 
+    @Override
     public void removeSignalType(String type) throws SignalRegistryException {
         registry.removeSignalType(type);
+        flushOrThrow();
+    }
+
+    private void flush() throws FileManagerException, IOException {
+        FileManager.getInstance(documentRoot).writeFileContent(registry, getRegistryPath());
+    }
+
+    private void flushOrThrow() throws SignalRegistryException {
         try {
-            flush(registry);
-        } catch (FileManagerException e) {
+            flush();
+        } catch (FileManagerException | IOException e) {
             throw new SignalRegistryException(e.getMessage());
         }
     }

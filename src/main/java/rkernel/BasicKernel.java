@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2021-2026 Richie Akawa
+ * Licensed under the Apache License, Version 2.0. See LICENSE.
+ */
+
 package rkernel;
 
 import rkernel.component.IComponent;
@@ -11,10 +16,21 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
-public class BasicKernel implements IKernel{
+/**
+ * Default kernel. Components are JARs in {@code <documentRoot>/components/<kernel name>/},
+ * secondary kernels are JARs in {@code <documentRoot>/}; both folders are watched
+ * after the initial load.
+ */
+public class BasicKernel implements IKernel {
+
+    public static final String DEFAULT_NAME = "Default rkernel";
 
     protected SignalManager signalManager;
     protected final IComponentLoader<IComponent> componentLoader;
@@ -22,44 +38,51 @@ public class BasicKernel implements IKernel{
     protected final Map<String, IKernel> kernels;
     protected final Map<String, IComponent> components;
     protected final Collection<String> signals;
+    protected final File documentRoot;
 
     protected final String kernelName;
 
     BasicKernel(Builder builder) {
-        this.componentLoader = builder.getComponentLoader();
-        this.kernelLoader = builder.getKernelLoader();
-        this.kernels = builder.getKernels();
-        this.signals = builder.getSignals();
-        this.components = new HashMap<>();
+        this.componentLoader = builder.componentLoader;
+        this.kernelLoader = builder.kernelLoader;
+        this.kernels = new ConcurrentHashMap<>(builder.kernels);
+        this.signals = new ArrayList<>(builder.signals);
+        this.components = new ConcurrentHashMap<>();
         this.kernelName = builder.name;
+        this.documentRoot = builder.documentRoot;
+        this.signalManager = new SignalManager(this, documentRoot);
     }
 
     @Override
     public void load() {
         try {
-            signalManager = new SignalManager(this);
-            File file = Paths.get(".").toFile();
-            Path componentPath = Paths.get("components/".concat(kernelName));
-            if (Files.notExists(componentPath))
+            Path componentPath = documentRoot.toPath().resolve("components").resolve(kernelName);
+            if (Files.notExists(componentPath)) {
                 Files.createDirectories(componentPath);
+            }
             File componentFile = componentPath.toFile();
             if (componentLoader != null) {
-                new Thread(() -> {
+                Thread t = new Thread(() -> {
                     componentLoader.loadComponents(componentFile);
                     componentLoader.watch(componentFile);
-                }).start();
+                }, kernelName + "-components");
+                t.setDaemon(true);
+                t.start();
             }
             if (kernelLoader != null) {
-                new Thread(() -> {
-                    kernelLoader.loadComponents(file);
-                    kernelLoader.watch(file);
-                }).start();
+                Thread t = new Thread(() -> {
+                    kernelLoader.loadComponents(documentRoot);
+                    kernelLoader.watch(documentRoot);
+                }, kernelName + "-kernels");
+                t.setDaemon(true);
+                t.start();
             }
         } catch (IOException e) {
             dispatchLogException(e);
         }
     }
 
+    @Override
     public String getName() {
         return kernelName;
     }
@@ -69,29 +92,35 @@ public class BasicKernel implements IKernel{
         return components;
     }
 
+    /**
+     * Processes the signal here and returns the kernels it was actually handed
+     * to: the attached kernel that interprets it, if that is where it went.
+     * 1.0 always returned an empty list.
+     */
     @Override
     public Collection<IKernel> dispatchSignal(BasicSignal<?> signal) {
-        List<IKernel> tmpKernel = new ArrayList<>();
+        Object interpreter = getInterpreterOf(signal.getType());
         processSignal(signal);
-        return tmpKernel;
+        if (interpreter instanceof IKernel) {
+            return Collections.singletonList((IKernel) interpreter);
+        }
+        return Collections.emptyList();
     }
 
     @Override
     public Object processSignal(BasicSignal<?> signal) {
-        Object response = null;
-        // Find Interpreter
         Object interpreter = getInterpreterOf(signal.getType());
-        // Call Interpreter with his data
-        if (interpreter instanceof IComponent){
-            response = ((IComponent) interpreter).processSignal(signal);
-        }else if (interpreter instanceof IKernel){
-            response = ((IKernel) interpreter).processSignal(signal);
+        if (interpreter instanceof IComponent) {
+            return ((IComponent) interpreter).processSignal(signal);
         }
-        return response;
+        if (interpreter instanceof IKernel) {
+            return ((IKernel) interpreter).processSignal(signal);
+        }
+        return null;
     }
 
     @Override
-    public Map<String,IKernel> getKernels() {
+    public Map<String, IKernel> getKernels() {
         return kernels;
     }
 
@@ -107,12 +136,12 @@ public class BasicKernel implements IKernel{
 
     @Override
     public IComponent findComponentByName(String componentName) {
-        return components.getOrDefault(componentName, null);
+        return components.get(componentName);
     }
 
     @Override
     public IKernel findKernelByName(String kernelName) {
-        return kernels.getOrDefault(kernelName, null);
+        return kernels.get(kernelName);
     }
 
     @Override
@@ -125,38 +154,31 @@ public class BasicKernel implements IKernel{
         kernels.put(kernel.getName(), kernel);
     }
 
+    /**
+     * Hands the exception to whichever component interprets
+     * {@code exception_logging}. When none is registered the exception is
+     * dropped silently — a logging component is the first one to graft.
+     */
     @Override
     public void dispatchLogException(Exception e) {
-        LoggingSignal loggingSignal = new LoggingSignal(e);
-        this.dispatchSignal(loggingSignal);
+        dispatchSignal(new LoggingSignal(e));
     }
 
-    public static final class Builder{
+    public File getDocumentRoot() {
+        return documentRoot;
+    }
+
+    public static final class Builder {
         private IComponentLoader<IComponent> componentLoader;
         private IComponentLoader<IKernel> kernelLoader;
-        private final Map<String, IKernel> kernels;
-        private final Collection<String> signals;
-        private String name;
-
-        public Builder() {
-            this.componentLoader = null;
-            this.kernelLoader = null;
-            this.kernels = new HashMap<>();
-            this.signals = new ArrayList<>();
-            this.name = "Default rkernel";
-        }
-
-        IComponentLoader<IComponent> getComponentLoader() {
-            return componentLoader;
-        }
+        private final Map<String, IKernel> kernels = new ConcurrentHashMap<>();
+        private final List<String> signals = new ArrayList<>();
+        private String name = DEFAULT_NAME;
+        private File documentRoot = new File(".");
 
         public Builder setComponentLoader(IComponentLoader<IComponent> componentLoader) {
             this.componentLoader = componentLoader;
             return this;
-        }
-
-        IComponentLoader<IKernel> getKernelLoader() {
-            return kernelLoader;
         }
 
         public Builder setKernelLoader(IComponentLoader<IKernel> kernelLoader) {
@@ -164,22 +186,32 @@ public class BasicKernel implements IKernel{
             return this;
         }
 
-        public Builder setName(String name){
+        public Builder setName(String name) {
             this.name = name;
             return this;
         }
 
-        Map<String, IKernel> getKernels() {
-            return kernels;
+        /** Folder holding {@code components/} and {@code registries/}. Default: the working directory. */
+        public Builder setDocumentRoot(File documentRoot) {
+            this.documentRoot = documentRoot;
+            return this;
         }
 
-        Collection<String> getSignals() {
-            return signals;
+        /** Signal types this kernel itself interprets. */
+        public Builder addSignalType(String signalType) {
+            this.signals.add(signalType);
+            return this;
         }
 
-        public BasicKernel build(){
+        /**
+         * Builds the kernel. Loaders are optional: 1.0 dereferenced
+         * {@code componentLoader} unconditionally and threw
+         * {@code NullPointerException} on a kernel built without one.
+         */
+        public BasicKernel build() {
             BasicKernel kernel = new BasicKernel(this);
-            this.componentLoader.setKernel(kernel);
+            if (componentLoader != null) componentLoader.setKernel(kernel);
+            if (kernelLoader != null) kernelLoader.setKernel(kernel);
             return kernel;
         }
     }

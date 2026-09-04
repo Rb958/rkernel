@@ -1,7 +1,7 @@
-
-/*#################################################################################################
- # Copyright (c) 2021 RbStartup                                                                   #
- #################################################################################################*/
+/*
+ * Copyright (c) 2021-2026 Richie Akawa
+ * Licensed under the Apache License, Version 2.0. See LICENSE.
+ */
 
 package rkernel;
 
@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * @author Richie AKAWA richiebayless@gmail.com
- * @version 1.0
+ * @version 1.1
  * @since 1.0
  */
 public interface IKernel {
@@ -54,8 +54,9 @@ public interface IKernel {
     }
 
     /**
-     * Precess the incoming signal
+     * Process the incoming signal
      * @param signal Instance of signal received
+     * @return the interpreter's response, or {@code null} when no interpreter is registered
      */
     Object processSignal(BasicSignal<?> signal);
 
@@ -104,7 +105,7 @@ public interface IKernel {
 
     /**
      * Create connection between the current rkernel and the provided rkernel
-     * @param tmpkernel Instance on provided rkernel
+     * @param tmpkernel Instance of provided rkernel
      */
     void addKernel(IKernel tmpkernel);
 
@@ -119,6 +120,6 @@ public interface IKernel {
      * @return true if it's the default rkernel and false else
      */
     default boolean isDefault(){
-        return getName() != null && !getName().isEmpty() && getName().equalsIgnoreCase("Default rkernel");
+        return getName() != null && getName().equalsIgnoreCase(BasicKernel.DEFAULT_NAME);
     }
 }

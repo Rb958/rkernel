@@ -1,87 +1,101 @@
 plugins {
     id 'java-library'
-    id 'maven'
+    id 'maven-publish'
     id 'signing'
 }
 
-task javadocJar(type: Jar) {
-    classifier = 'javadoc'
-    from javadoc
+group = 'io.github.rb958'
+version = '1.1.0'
+description = 'A small kernel onto which modules are grafted as JAR plugins, hot-loaded and talking through signals.'
+
+// Compiled for Java 17 whatever JDK runs the build (17 or 21 in CI).
+java {
+    withJavadocJar()
+    withSourcesJar()
 }
 
-task sourcesJar(type: Jar) {
-    classifier = 'sources'
-    from sourceSets.main.allSource
-}
-
-artifacts {
-    archives javadocJar, sourcesJar
-}
-
-signing {
-    sign configurations.archives
-}
-
-group ='io.github.rb958'
-archivesBaseName = "rkernel"
-version = '1.0.1'
-
-uploadArchives {
-    repositories {
-        mavenDeployer {
-            beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
-
-            repository(url: "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/") {
-                authentication(userName: username, password: password)
-            }
-
-            snapshotRepository(url: "https://s01.oss.sonatype.org/content/repositories/snapshots/") {
-                authentication(userName: username, password: password)
-            }
-
-            pom.project{
-                name 'RBKernel'
-                packaging 'jar'
-                description 'It is a small kernel on which several modules can be grafted in the form of plugins. The kernel communicates with all the modules grafted on it and the modules can communicate with the other modules grafted on the kernel through signals that they emit to the kernel. With this kernel, there is no need to restart the running application just to add new features because the kernel detects and loads any new module.'
-                url 'https://github.com/Rb958/rkernel'
-
-                scm{
-                    connection 'scm:github:https://github.com/Rb958/rkernel.git'
-                    developerConnection 'https://github.com/Rb958/rkernel.git'
-                    url 'https://github.com/Rb958/rkernel.git'
-                }
-
-                licenses{
-                    license{
-                        name 'The apache licence version 2.0'
-                        url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
-                    }
-                }
-
-                developers{
-                    developer{
-                        id 'richie'
-                        name 'Richie AKAWA'
-                        email 'richiebayless@gmail.com'
-                    }
-                }
-            }
-        }
-    }
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
 }
 
 repositories {
     mavenCentral()
 }
 
+// No runtime dependency. 1.0 pulled javax.xml.bind 2.3 and jakarta.xml.bind 3.0
+// together; the registry is now read and written with the JDK's own XML API.
 dependencies {
-    implementation 'javax.xml.bind:jaxb-api:2.3.1'
-    implementation 'com.sun.xml.bind:jaxb-impl:3.0.2'
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
 
-    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.0'
-    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+javadoc {
+    options.encoding = 'UTF-8'
+    options.addBooleanOption('Xdoclint:none', true)
 }
 
 test {
     useJUnitPlatform()
+    testLogging {
+        events = ['passed', 'failed', 'skipped']
+        exceptionFormat = 'full'
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifactId = 'rkernel'
+            pom {
+                name = 'rkernel'
+                description = project.description
+                url = 'https://github.com/Rb958/rkernel'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'rb958'
+                        name = 'Richie Akawa'
+                        email = 'richiebayless@gmail.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/Rb958/rkernel.git'
+                    developerConnection = 'scm:git:git@github.com:Rb958/rkernel.git'
+                    url = 'https://github.com/Rb958/rkernel'
+                }
+            }
+        }
+    }
+    repositories {
+        maven {
+            name = 'sonatype'
+            def release = 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/'
+            def snapshot = 'https://s01.oss.sonatype.org/content/repositories/snapshots/'
+            url = version.endsWith('SNAPSHOT') ? snapshot : release
+            credentials {
+                username = findProperty('ossrhUsername') ?: System.getenv('OSSRH_USERNAME')
+                password = findProperty('ossrhPassword') ?: System.getenv('OSSRH_PASSWORD')
+            }
+        }
+    }
+}
+
+// Signing is only required for publication; a plain build or test never needs a key.
+signing {
+    required = { gradle.taskGraph.hasTask('publish') }
+    def key = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+    def pass = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+    if (key) {
+        useInMemoryPgpKeys(key, pass)
+    }
+    sign publishing.publications.mavenJava
 }
