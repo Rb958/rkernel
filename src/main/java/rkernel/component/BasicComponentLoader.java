@@ -1,65 +1,87 @@
+/*
+ * Copyright (c) 2021-2026 Richie Akawa
+ * Licensed under the Apache License, Version 2.0. See LICENSE.
+ */
+
 package rkernel.component;
 
 import rkernel.IKernel;
 import rkernel.exception.SignalRegistryException;
-import rkernel.utils.file.*;
+import rkernel.utils.file.FileAdapter;
+import rkernel.utils.file.FileEvent;
+import rkernel.utils.file.FileWatcher;
 
 import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
-import java.util.*;
+import java.util.Collection;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
-public class BasicComponentLoader implements IComponentLoader<IComponent>{
+/**
+ * Loads components from the JARs of a folder, registers their signal types with
+ * the kernel, and keeps watching the folder: a JAR dropped in is loaded, a JAR
+ * removed is unregistered — without restarting the application.
+ */
+public class BasicComponentLoader implements IComponentLoader<IComponent> {
 
-    protected final HashMap<String, IComponent> components;
+    protected final Map<String, IComponent> components = new ConcurrentHashMap<>();
+    /** JAR file name → component name, so a deleted JAR can still be unregistered. */
+    protected final Map<String, String> origins = new ConcurrentHashMap<>();
     protected IKernel defaultKernel;
 
-    public BasicComponentLoader(){
-        this.components = new HashMap<>();
-    }
-
+    @Override
     public void setKernel(IKernel defaultKernel) {
         this.defaultKernel = defaultKernel;
     }
 
-    public void loadComponents(File folder){
-        File[] files = folder.listFiles(File::isFile);
+    @Override
+    public void loadComponents(File folder) {
+        File[] files = folder.listFiles((dir, name) -> name.endsWith(".jar"));
         if (files != null) {
             for (File file : files) {
-                executeClass(file);
+                loadOne(file);
             }
         }
     }
 
-    protected void executeClass(File file){
-        new Thread(() -> {
-            try {
-                Class<?> tmpClass = loadSingleFile(file, IComponent.class);
-                Constructor<?> constructor = tmpClass.getConstructor();
-                IComponent component = (IComponent) constructor.newInstance();
-                component.getSIgnalType().forEach(signalType ->{
-                    try {
-                        defaultKernel.getSignalManager().addSignalType(signalType, component);
-                    } catch (SignalRegistryException e) {
-                        defaultKernel.dispatchLogException(e);
-                    }
-                });
-                defaultKernel.getComponents().put(component.getName(), component);
-                component.load(defaultKernel);
-            } catch (InstantiationException | IllegalAccessException | NoSuchMethodException | InvocationTargetException | IOException e) {
-                defaultKernel.dispatchLogException(e);
+    /** Instantiates the component of a JAR and wires it to the kernel. Returns it, or {@code null}. */
+    public IComponent loadOne(File file) {
+        try {
+            Class<?> componentClass = loadSingleFile(file, IComponent.class);
+            if (componentClass == null) {
+                return null;
             }
-        }).start();
+            IComponent component = (IComponent) componentClass.getConstructor().newInstance();
+            for (String signalType : component.getSignalTypes()) {
+                try {
+                    defaultKernel.getSignalManager().addSignalType(signalType, component);
+                } catch (SignalRegistryException e) {
+                    defaultKernel.dispatchLogException(e);
+                }
+            }
+            components.put(component.getName(), component);
+            origins.put(file.getName(), component.getName());
+            defaultKernel.getComponents().put(component.getName(), component);
+            component.load(defaultKernel);
+            return component;
+        } catch (ReflectiveOperationException | java.io.IOException | RuntimeException e) {
+            defaultKernel.dispatchLogException(e);
+            return null;
+        }
+    }
+
+    /** @deprecated use {@link #loadOne(File)}; kept for subclasses of 1.0. */
+    @Deprecated
+    protected void executeClass(File file) {
+        loadOne(file);
     }
 
     @Override
-    public void watch(File watchDirectotie) {
-        FileWatcher componentWatcher = new FileWatcher(watchDirectotie);
-        componentWatcher.addEventListener(new FileAdapter() {
+    public void watch(File watchedDirectory) {
+        FileWatcher watcher = new FileWatcher(watchedDirectory);
+        watcher.addEventListener(new FileAdapter() {
             @Override
             public void onCreateFile(FileEvent event) {
-                executeClass(event.getFile());
+                if (event.getFile().getName().endsWith(".jar")) loadOne(event.getFile());
             }
 
             @Override
@@ -69,28 +91,30 @@ public class BasicComponentLoader implements IComponentLoader<IComponent>{
         }).watch();
     }
 
+    /**
+     * Unregisters the component that came from this JAR. The JAR is gone, so it
+     * cannot be re-read: the component is found by the file name it was loaded
+     * from, tracked in {@link #origins}.
+     */
     protected void wipeComponent(File file) {
-        try{
-            Class<?> componentClass = loadSingleFile(file, IComponent.class);
-            Constructor<?> constructor = componentClass.getConstructor();
-            IComponent component = (IComponent) constructor.newInstance();
-            if (defaultKernel.getComponents().containsKey(component.getName())) {
-                Collection<String> signalTypes = component.getSIgnalType();
-                signalTypes.forEach(signalType -> {
-                    try {
-                        defaultKernel.getSignalManager().removeSignalType(signalType);
-                    } catch (SignalRegistryException e) {
-                        defaultKernel.dispatchLogException(e);
-                    }
-                });
-                defaultKernel.getComponents().remove(component.getName());
+        String name = origins.remove(file.getName());
+        if (name == null) return;
+        IComponent component = components.remove(name);
+        if (component == null) return;
+        Collection<String> signalTypes = component.getSignalTypes();
+        for (String signalType : signalTypes) {
+            try {
+                defaultKernel.getSignalManager().removeSignalType(signalType);
+            } catch (SignalRegistryException e) {
+                defaultKernel.dispatchLogException(e);
             }
-        } catch (IOException | NoSuchMethodException | InstantiationException | IllegalAccessException | InvocationTargetException e) {
-            defaultKernel.dispatchLogException(e);
         }
+        defaultKernel.getComponents().remove(name);
+        component.stop();
     }
 
-    public HashMap<String, IComponent> getComponents() {
+    @Override
+    public Map<String, IComponent> getComponents() {
         return components;
     }
 }

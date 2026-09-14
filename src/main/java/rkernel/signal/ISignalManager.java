@@ -1,17 +1,18 @@
-/*#################################################################################################
- # Copyright (c) 2021 Afrikpay                                                                    #
- #################################################################################################*/
+/*
+ * Copyright (c) 2021-2026 Richie Akawa
+ * Licensed under the Apache License, Version 2.0. See LICENSE.
+ */
 
 package rkernel.signal;
 
-import rkernel.BasicKernel;
 import rkernel.IKernel;
 import rkernel.component.IComponent;
 import rkernel.exception.SignalRegistryException;
 
 public interface ISignalManager {
 
-    Object findInterpreter(String type) throws SignalRegistryException;
+    /** The component or kernel registered for this signal type, or {@code null}. */
+    Object findInterpreter(String type);
 
     void addSignalType(String type, IComponent component) throws SignalRegistryException;
 
@@ -19,7 +20,7 @@ public interface ISignalManager {
 
     void removeSignalType(String type) throws SignalRegistryException;
 
-    void setKernel(BasicKernel kernel) throws SignalRegistryException;
+    void setKernel(IKernel kernel);
 
-    SignalRegistry.SignalTypeEntry getRegistryEntry(String test);
+    SignalRegistry.SignalTypeEntry getRegistryEntry(String type);
 }
